@@ -11,3 +11,8 @@ assets/libs/
 node_modules/
 vendor
 .idea
+
+# PDF build outputs
+scaling-book.pdf
+scaling-book.html
+scaling-book-combined.md
