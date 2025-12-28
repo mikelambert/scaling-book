@@ -28,6 +28,40 @@ CHAPTERS = [
     ("gpus.md", 12),
 ]
 
+# Map from various link formats to chapter IDs
+CHAPTER_LINK_MAP = {
+    # Direct chapter names
+    'index': 'chapter-index',
+    'roofline': 'chapter-roofline',
+    'tpus': 'chapter-tpus',
+    'sharding': 'chapter-sharding',
+    'transformers': 'chapter-transformers',
+    'training': 'chapter-training',
+    'applied-training': 'chapter-applied-training',
+    'inference': 'chapter-inference',
+    'applied-inference': 'chapter-applied-inference',
+    'profiling': 'chapter-profiling',
+    'jax-stuff': 'chapter-jax-stuff',
+    'conclusion': 'chapter-conclusion',
+    'gpus': 'chapter-gpus',
+    # With ../ prefix
+    '../roofline': 'chapter-roofline',
+    '../tpus': 'chapter-tpus',
+    '../sharding': 'chapter-sharding',
+    '../transformers': 'chapter-transformers',
+    '../training': 'chapter-training',
+    '../applied-training': 'chapter-applied-training',
+    '../inference': 'chapter-inference',
+    '../applied-inference': 'chapter-applied-inference',
+    '../profiling': 'chapter-profiling',
+    '../jax-stuff': 'chapter-jax-stuff',
+    '../conclusion': 'chapter-conclusion',
+    '../gpus': 'chapter-gpus',
+    # Special cases
+    '..': 'chapter-index',
+    '.': 'chapter-index',
+}
+
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def parse_frontmatter(content):
@@ -138,6 +172,46 @@ def process_latex_math(content):
 
     return content
 
+def process_internal_links(content):
+    """Convert internal markdown links to PDF anchor links."""
+
+    def replace_link(match):
+        text = match.group(1)
+        url = match.group(2)
+
+        # Skip external links (http, https, mailto)
+        if url.startswith(('http://', 'https://', 'mailto:')):
+            return match.group(0)
+
+        # Parse the URL - might have an anchor (#section-name)
+        if '#' in url:
+            base_url, anchor = url.split('#', 1)
+        else:
+            base_url = url
+            anchor = None
+
+        # Look up the chapter ID
+        chapter_id = CHAPTER_LINK_MAP.get(base_url)
+
+        if chapter_id:
+            if anchor:
+                # Link to specific section within chapter
+                return f'[{text}](#{chapter_id}-{anchor})'
+            else:
+                # Link to chapter
+                return f'[{text}](#{chapter_id})'
+        else:
+            # Unknown internal link - keep the anchor if present
+            if anchor:
+                return f'[{text}](#{anchor})'
+            # Otherwise return as-is (might be a valid anchor)
+            return match.group(0)
+
+    # Match markdown links: [text](url)
+    content = re.sub(r'\[([^\]]+)\]\(([^)]+)\)', replace_link, content)
+
+    return content
+
 def process_liquid_tags(content):
     """Convert Jekyll liquid tags to HTML."""
     # Handle figure.liquid includes
@@ -199,6 +273,9 @@ def convert_markdown_to_html(md_content, metadata):
     """Convert markdown to HTML with extensions."""
     # Process liquid tags first
     md_content = process_liquid_tags(md_content)
+
+    # Process internal links to convert to PDF anchors
+    md_content = process_internal_links(md_content)
 
     # Process LaTeX math before markdown conversion
     md_content = process_latex_math(md_content)
@@ -636,8 +713,8 @@ def generate_toc():
 
     for part_title, chapters in parts:
         html += f'<li><strong>{part_title}</strong>\n<ul>\n'
-        for chapter_title, _ in chapters:
-            html += f'<li>{chapter_title}</li>\n'
+        for chapter_title, chapter_slug in chapters:
+            html += f'<li><a href="#chapter-{chapter_slug}">{chapter_title}</a></li>\n'
         html += '</ul></li>\n'
 
     html += '</ul>\n</div>\n'
@@ -667,11 +744,13 @@ def main():
         # Convert to HTML
         chapter_html = convert_markdown_to_html(body, metadata)
 
-        # Add chapter header
+        # Add chapter header with anchor ID
         title = metadata.get('title', f'Chapter {section_num}')
         description = metadata.get('description', '')
+        # Generate chapter ID from filename (without .md)
+        chapter_id = 'chapter-' + filename.replace('.md', '')
 
-        header = f'<div class="chapter-header">\n'
+        header = f'<div class="chapter-header" id="{chapter_id}">\n'
         header += f'<h1 class="chapter-title">{title}</h1>\n'
         if description and section_num > 0:  # Skip description for intro as it's quite long
             header += f'<div class="chapter-description">{description}</div>\n'
