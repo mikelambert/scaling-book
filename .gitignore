@@ -12,3 +12,9 @@ node_modules/
 vendor
 .idea
 
+
+# Intermediate generated files
+scaling-book-katex.html
+scaling-book-katex.txt
+scaling-book.txt
+scaling-book.html
