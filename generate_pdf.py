@@ -9,6 +9,7 @@ import yaml
 import markdown
 from weasyprint import HTML, CSS
 from pygments.formatters import HtmlFormatter
+from latex2mathml.converter import convert as latex_to_mathml
 
 # Chapter files in order (section_number)
 CHAPTERS = [
@@ -41,6 +42,53 @@ def parse_frontmatter(content):
             except yaml.YAMLError:
                 pass
     return {}, content
+
+def process_latex_math(content):
+    """Convert LaTeX math to MathML for proper rendering."""
+
+    def convert_display_math(match):
+        """Convert display math $$...$$ to MathML."""
+        latex = match.group(1).strip()
+        try:
+            mathml = latex_to_mathml(latex, display="block")
+            return f'<div class="math-display">{mathml}</div>'
+        except Exception as e:
+            # If conversion fails, return escaped LaTeX
+            return f'<div class="math-display math-fallback">[{latex}]</div>'
+
+    def convert_inline_math(match):
+        """Convert inline math $...$ to MathML."""
+        latex = match.group(1).strip()
+        try:
+            mathml = latex_to_mathml(latex, display="inline")
+            return f'<span class="math-inline">{mathml}</span>'
+        except Exception as e:
+            # If conversion fails, return escaped LaTeX
+            return f'<span class="math-inline math-fallback">[{latex}]</span>'
+
+    # First, protect code blocks from math processing
+    code_blocks = []
+    def save_code_block(match):
+        code_blocks.append(match.group(0))
+        return f'<<<CODE_BLOCK_{len(code_blocks) - 1}>>>'
+
+    # Save fenced code blocks
+    content = re.sub(r'```[\s\S]*?```', save_code_block, content)
+    # Save inline code
+    content = re.sub(r'`[^`]+`', save_code_block, content)
+
+    # Process display math first ($$...$$) - be careful with newlines
+    content = re.sub(r'\$\$([^$]+?)\$\$', convert_display_math, content, flags=re.DOTALL)
+
+    # Process inline math ($...$) - but not $$ which we already handled
+    # Match $ followed by non-$ content, ending with $ not followed by $
+    content = re.sub(r'(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)', convert_inline_math, content)
+
+    # Restore code blocks
+    for i, block in enumerate(code_blocks):
+        content = content.replace(f'<<<CODE_BLOCK_{i}>>>', block)
+
+    return content
 
 def process_liquid_tags(content):
     """Convert Jekyll liquid tags to HTML."""
@@ -103,6 +151,9 @@ def convert_markdown_to_html(md_content, metadata):
     """Convert markdown to HTML with extensions."""
     # Process liquid tags first
     md_content = process_liquid_tags(md_content)
+
+    # Process LaTeX math before markdown conversion
+    md_content = process_latex_math(md_content)
 
     # Process citations
     md_content = process_citations(md_content)
@@ -447,6 +498,35 @@ li {{
 
 .toc a {{
     color: #333;
+}}
+
+/* Math styling */
+.math-display {{
+    text-align: center;
+    margin: 1em 0;
+    overflow-x: auto;
+}}
+
+.math-inline {{
+    display: inline;
+}}
+
+.math-fallback {{
+    font-family: 'Consolas', 'Monaco', monospace;
+    color: #666;
+}}
+
+math {{
+    font-size: 1.1em;
+}}
+
+/* MathML specific styling */
+mfrac {{
+    vertical-align: middle;
+}}
+
+msub, msup, msubsup {{
+    font-size: 0.8em;
 }}
 
 {pygments_css}
