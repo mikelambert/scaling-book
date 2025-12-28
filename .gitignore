@@ -12,7 +12,6 @@ node_modules/
 vendor
 .idea
 
-# PDF build outputs
-scaling-book.pdf
+# PDF build intermediate files
 scaling-book.html
 scaling-book-combined.md
