@@ -11,3 +11,11 @@ assets/libs/
 node_modules/
 vendor
 .idea
+
+# Generated PDF files
+scaling-book-katex.html
+scaling-book-katex.pdf
+scaling-book-katex.txt
+scaling-book.txt
+scaling-book.html
+scaling-book.pdf
