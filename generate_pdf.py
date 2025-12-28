@@ -80,6 +80,16 @@ def parse_frontmatter(content):
 def process_latex_math(content):
     """Convert LaTeX math to MathML for proper rendering."""
 
+    def fix_mathml_operators(mathml):
+        """Fix MathML where operators are incorrectly in <mi> tags."""
+        # latex2mathml sometimes puts × in <mi> instead of <mo>
+        # Fix: <mi>×</mi> -> <mo>×</mo>
+        # Also fix other common operators
+        operators = ['×', '&#x000D7;', '&#xD7;', '·', '&#x00B7;', '&#xB7;']
+        for op in operators:
+            mathml = mathml.replace(f'<mi>{op}</mi>', f'<mo>{op}</mo>')
+        return mathml
+
     def convert_to_mathml(latex, display_mode):
         """Convert LaTeX to MathML with specified display mode."""
         # Strip \begin{equation} and \end{equation} wrappers if present
@@ -93,9 +103,11 @@ def process_latex_math(content):
         try:
             if display_mode:
                 mathml = latex_to_mathml(latex, display="block")
+                mathml = fix_mathml_operators(mathml)
                 return f'<div class="math-display">{mathml}</div>'
             else:
                 mathml = latex_to_mathml(latex, display="inline")
+                mathml = fix_mathml_operators(mathml)
                 return f'<span class="math-inline">{mathml}</span>'
         except Exception as e:
             # If conversion fails, return escaped LaTeX
