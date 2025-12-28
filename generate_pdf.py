@@ -46,25 +46,21 @@ def parse_frontmatter(content):
 def process_latex_math(content):
     """Convert LaTeX math to MathML for proper rendering."""
 
-    def convert_display_math(match):
-        """Convert display math $$...$$ to MathML."""
-        latex = match.group(1).strip()
+    def convert_to_mathml(latex, display_mode):
+        """Convert LaTeX to MathML with specified display mode."""
         try:
-            mathml = latex_to_mathml(latex, display="block")
-            return f'<div class="math-display">{mathml}</div>'
+            if display_mode:
+                mathml = latex_to_mathml(latex, display="block")
+                return f'<div class="math-display">{mathml}</div>'
+            else:
+                mathml = latex_to_mathml(latex, display="inline")
+                return f'<span class="math-inline">{mathml}</span>'
         except Exception as e:
             # If conversion fails, return escaped LaTeX
-            return f'<div class="math-display math-fallback">[{latex}]</div>'
-
-    def convert_inline_math(match):
-        """Convert inline math $...$ to MathML."""
-        latex = match.group(1).strip()
-        try:
-            mathml = latex_to_mathml(latex, display="inline")
-            return f'<span class="math-inline">{mathml}</span>'
-        except Exception as e:
-            # If conversion fails, return escaped LaTeX
-            return f'<span class="math-inline math-fallback">[{latex}]</span>'
+            if display_mode:
+                return f'<div class="math-display math-fallback">[{latex}]</div>'
+            else:
+                return f'<span class="math-inline math-fallback">[{latex}]</span>'
 
     # First, protect code blocks from math processing
     code_blocks = []
@@ -77,12 +73,64 @@ def process_latex_math(content):
     # Save inline code
     content = re.sub(r'`[^`]+`', save_code_block, content)
 
-    # Process display math first ($$...$$) - be careful with newlines
-    content = re.sub(r'\$\$([^$]+?)\$\$', convert_display_math, content, flags=re.DOTALL)
+    # Process $$...$$ - determine if display or inline based on context
+    # Display math: $$...$$ on its own line (only whitespace before/after)
+    # Inline math: $$...$$ with text before or after on the same line
+    def convert_double_dollar(match):
+        full_match = match.group(0)
+        latex = match.group(1).strip()
+        before = match.group('before') if 'before' in match.groupdict() else ''
+        after = match.group('after') if 'after' in match.groupdict() else ''
 
-    # Process inline math ($...$) - but not $$ which we already handled
-    # Match $ followed by non-$ content, ending with $ not followed by $
-    content = re.sub(r'(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)', convert_inline_math, content)
+        # Check if this is on its own line (display mode)
+        # by looking at what comes before and after
+        start_pos = match.start()
+        end_pos = match.end()
+
+        # Find the start of the line
+        line_start = content.rfind('\n', 0, start_pos) + 1
+        # Find the end of the line
+        line_end = content.find('\n', end_pos)
+        if line_end == -1:
+            line_end = len(content)
+
+        # Get text before and after on the same line
+        text_before = content[line_start:start_pos].strip()
+        text_after = content[end_pos:line_end].strip()
+
+        # If there's no text before and after (or only whitespace), it's display math
+        is_display = (text_before == '' and text_after == '')
+
+        return convert_to_mathml(latex, is_display)
+
+    # We need to process $$...$$ carefully - can't use simple re.sub because we need context
+    # Process line by line to determine context properly
+    lines = content.split('\n')
+    result_lines = []
+
+    for line in lines:
+        # Check if the line is ONLY a $$...$$ equation (display math)
+        display_match = re.match(r'^\s*\$\$([^$]+?)\$\$\s*$', line)
+        if display_match:
+            latex = display_match.group(1).strip()
+            result_lines.append(convert_to_mathml(latex, display_mode=True))
+        else:
+            # Process inline $$...$$ within the line
+            processed_line = re.sub(
+                r'\$\$([^$]+?)\$\$',
+                lambda m: convert_to_mathml(m.group(1).strip(), display_mode=False),
+                line
+            )
+            result_lines.append(processed_line)
+
+    content = '\n'.join(result_lines)
+
+    # Process single $ inline math ($...$)
+    content = re.sub(
+        r'(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)',
+        lambda m: convert_to_mathml(m.group(1).strip(), display_mode=False),
+        content
+    )
 
     # Restore code blocks
     for i, block in enumerate(code_blocks):
