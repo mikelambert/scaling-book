@@ -82,6 +82,14 @@ def process_latex_math(content):
 
     def convert_to_mathml(latex, display_mode):
         """Convert LaTeX to MathML with specified display mode."""
+        # Strip \begin{equation} and \end{equation} wrappers if present
+        latex = re.sub(r'\\begin\{equation\}', '', latex)
+        latex = re.sub(r'\\end\{equation\}', '', latex)
+        latex = latex.strip()
+
+        if not latex:
+            return ''
+
         try:
             if display_mode:
                 mathml = latex_to_mathml(latex, display="block")
@@ -107,59 +115,60 @@ def process_latex_math(content):
     # Save inline code
     content = re.sub(r'`[^`]+`', save_code_block, content)
 
-    # Process $$...$$ - determine if display or inline based on context
-    # Display math: $$...$$ on its own line (only whitespace before/after)
-    # Inline math: $$...$$ with text before or after on the same line
-    def convert_double_dollar(match):
-        full_match = match.group(0)
-        latex = match.group(1).strip()
-        before = match.group('before') if 'before' in match.groupdict() else ''
-        after = match.group('after') if 'after' in match.groupdict() else ''
+    # Step 1: Process multi-line $$...$$ blocks using a different approach
+    # Find all $$ positions and pair them up
+    def process_all_double_dollar(text):
+        result = []
+        i = 0
+        while i < len(text):
+            # Find next $$
+            start = text.find('$$', i)
+            if start == -1:
+                result.append(text[i:])
+                break
 
-        # Check if this is on its own line (display mode)
-        # by looking at what comes before and after
-        start_pos = match.start()
-        end_pos = match.end()
+            # Add text before $$
+            result.append(text[i:start])
 
-        # Find the start of the line
-        line_start = content.rfind('\n', 0, start_pos) + 1
-        # Find the end of the line
-        line_end = content.find('\n', end_pos)
-        if line_end == -1:
-            line_end = len(content)
+            # Find closing $$
+            end = text.find('$$', start + 2)
+            if end == -1:
+                # No closing $$, add rest as-is
+                result.append(text[start:])
+                break
 
-        # Get text before and after on the same line
-        text_before = content[line_start:start_pos].strip()
-        text_after = content[end_pos:line_end].strip()
+            # Extract LaTeX content
+            latex = text[start + 2:end]
 
-        # If there's no text before and after (or only whitespace), it's display math
-        is_display = (text_before == '' and text_after == '')
+            # Determine if this is display or inline math
+            # Check what's before on the same line
+            line_start = text.rfind('\n', 0, start)
+            if line_start == -1:
+                line_start = 0
+            else:
+                line_start += 1
+            text_before = text[line_start:start].strip()
 
-        return convert_to_mathml(latex, is_display)
+            # Check what's after on the same line
+            line_end = text.find('\n', end + 2)
+            if line_end == -1:
+                line_end = len(text)
+            text_after = text[end + 2:line_end].strip()
 
-    # We need to process $$...$$ carefully - can't use simple re.sub because we need context
-    # Process line by line to determine context properly
-    lines = content.split('\n')
-    result_lines = []
+            # It's display math if alone on line(s) - no text before AND no text after
+            is_display = (text_before == '' and text_after == '')
 
-    for line in lines:
-        # Check if the line is ONLY a $$...$$ equation (display math)
-        display_match = re.match(r'^\s*\$\$([^$]+?)\$\$\s*$', line)
-        if display_match:
-            latex = display_match.group(1).strip()
-            result_lines.append(convert_to_mathml(latex, display_mode=True))
-        else:
-            # Process inline $$...$$ within the line
-            processed_line = re.sub(
-                r'\$\$([^$]+?)\$\$',
-                lambda m: convert_to_mathml(m.group(1).strip(), display_mode=False),
-                line
-            )
-            result_lines.append(processed_line)
+            # Convert and add
+            converted = convert_to_mathml(latex, is_display)
+            result.append(converted)
 
-    content = '\n'.join(result_lines)
+            i = end + 2
 
-    # Process single $ inline math ($...$)
+        return ''.join(result)
+
+    content = process_all_double_dollar(content)
+
+    # Step 2: Process single $ inline math ($...$)
     content = re.sub(
         r'(?<!\$)\$(?!\$)([^$\n]+?)\$(?!\$)',
         lambda m: convert_to_mathml(m.group(1).strip(), display_mode=False),
