@@ -13,6 +13,7 @@ from urllib.parse import urljoin, urlparse
 import copy
 import base64
 from io import BytesIO
+import latex2mathml.converter
 
 BASE_URL = "https://jax-ml.github.io/scaling-book/"
 
@@ -110,131 +111,77 @@ def download_image(url, max_retries=3):
 
     return None
 
-def latex_to_unicode(latex):
-    """Convert LaTeX to Unicode text representation."""
+def latex_to_mathml(latex, display=False):
+    """Convert LaTeX to MathML using latex2mathml."""
+    # Unescape HTML entities
     latex = latex.replace('&gt;', '>').replace('&lt;', '<').replace('&amp;', '&')
 
-    subscript_map = {
-        '0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
-        '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
-        'a': 'ₐ', 'e': 'ₑ', 'h': 'ₕ', 'i': 'ᵢ', 'j': 'ⱼ',
-        'k': 'ₖ', 'l': 'ₗ', 'm': 'ₘ', 'n': 'ₙ', 'o': 'ₒ',
-        'p': 'ₚ', 'r': 'ᵣ', 's': 'ₛ', 't': 'ₜ', 'u': 'ᵤ',
-        'v': 'ᵥ', 'x': 'ₓ', '+': '₊', '-': '₋', '=': '₌',
-        '(': '₍', ')': '₎',
-    }
+    # Remove \begin{equation}, \end{equation}, \begin{align*}, etc.
+    latex = re.sub(r'\\begin\{[^}]+\}', '', latex)
+    latex = re.sub(r'\\end\{[^}]+\}', '', latex)
 
-    superscript_map = {
-        '0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
-        '5': '⁵', '6': '⁶', '7': '⁷', '8': '⁸', '9': '⁹',
-        'a': 'ᵃ', 'b': 'ᵇ', 'c': 'ᶜ', 'd': 'ᵈ', 'e': 'ᵉ',
-        'f': 'ᶠ', 'g': 'ᵍ', 'h': 'ʰ', 'i': 'ⁱ', 'j': 'ʲ',
-        'k': 'ᵏ', 'l': 'ˡ', 'm': 'ᵐ', 'n': 'ⁿ', 'o': 'ᵒ',
-        'p': 'ᵖ', 'r': 'ʳ', 's': 'ˢ', 't': 'ᵗ', 'u': 'ᵘ',
-        'v': 'ᵛ', 'w': 'ʷ', 'x': 'ˣ', 'y': 'ʸ', 'z': 'ᶻ',
-        '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾',
-        'T': 'ᵀ', '*': '∗',
-    }
+    # Clean up alignment characters that latex2mathml doesn't handle
+    latex = latex.replace('&', '')  # Remove alignment markers
+    latex = re.sub(r'\\\[[\d.]*em\]', '', latex)  # Remove spacing like \\[0.5em]
+    latex = latex.replace('\\\\', ' ')  # Replace line breaks with space
 
-    greek = {
-        r'\alpha': 'α', r'\beta': 'β', r'\gamma': 'γ', r'\delta': 'δ',
-        r'\epsilon': 'ε', r'\zeta': 'ζ', r'\eta': 'η', r'\theta': 'θ',
-        r'\iota': 'ι', r'\kappa': 'κ', r'\lambda': 'λ', r'\mu': 'μ',
-        r'\nu': 'ν', r'\xi': 'ξ', r'\pi': 'π', r'\rho': 'ρ',
-        r'\sigma': 'σ', r'\tau': 'τ', r'\upsilon': 'υ', r'\phi': 'φ',
-        r'\chi': 'χ', r'\psi': 'ψ', r'\omega': 'ω',
-        r'\Gamma': 'Γ', r'\Delta': 'Δ', r'\Theta': 'Θ', r'\Lambda': 'Λ',
-        r'\Xi': 'Ξ', r'\Pi': 'Π', r'\Sigma': 'Σ', r'\Phi': 'Φ',
-        r'\Psi': 'Ψ', r'\Omega': 'Ω',
-    }
+    # Strip whitespace
+    latex = latex.strip()
 
-    symbols = {
-        r'\times': '×', r'\div': '÷', r'\pm': '±', r'\mp': '∓',
-        r'\cdot': '·', r'\cdots': '⋯', r'\ldots': '…',
-        r'\leq': '≤', r'\geq': '≥', r'\neq': '≠', r'\approx': '≈',
-        r'\equiv': '≡', r'\sim': '∼', r'\propto': '∝',
-        r'\infty': '∞', r'\partial': '∂', r'\nabla': '∇',
-        r'\sum': '∑', r'\prod': '∏', r'\int': '∫',
-        r'\sqrt': '√', r'\forall': '∀', r'\exists': '∃',
-        r'\in': '∈', r'\notin': '∉', r'\subset': '⊂', r'\supset': '⊃',
-        r'\cup': '∪', r'\cap': '∩', r'\emptyset': '∅',
-        r'\rightarrow': '→', r'\leftarrow': '←', r'\Rightarrow': '⇒',
-        r'\Leftarrow': '⇐', r'\leftrightarrow': '↔', r'\Leftrightarrow': '⇔',
-        r'\uparrow': '↑', r'\downarrow': '↓',
-        r'\circ': '∘', r'\bullet': '•', r'\star': '★',
-        r'\land': '∧', r'\lor': '∨', r'\neg': '¬',
-        r'\oplus': '⊕', r'\otimes': '⊗',
-        r'\le': '≤', r'\ge': '≥', r'\ll': '≪', r'\gg': '≫',
-        r'\max': 'max', r'\min': 'min',
-    }
+    if not latex:
+        return ''
 
-    result = latex
+    try:
+        # Convert to MathML
+        display_mode = 'block' if display else 'inline'
+        mathml = latex2mathml.converter.convert(latex, display=display_mode)
+        return mathml
+    except Exception as e:
+        # Fallback: return the raw LaTeX in a styled span
+        escaped = latex.replace('<', '&lt;').replace('>', '&gt;')
+        if display:
+            return f'<p class="math-fallback" style="text-align: center; font-style: italic;">{escaped}</p>'
+        else:
+            return f'<span class="math-fallback" style="font-style: italic;">{escaped}</span>'
 
-    for cmd, char in greek.items():
-        result = result.replace(cmd, char)
-
-    for cmd, char in symbols.items():
-        result = result.replace(cmd, char)
-
-    result = re.sub(r'\\text\{([^}]*)\}', r'\1', result)
-    result = re.sub(r'\\textbf\{([^}]*)\}', r'\1', result)
-    result = re.sub(r'\\mathrm\{([^}]*)\}', r'\1', result)
-    result = re.sub(r'\\mathbf\{([^}]*)\}', r'\1', result)
-
-    result = re.sub(r'\\frac\{([^}]*)\}\{([^}]*)\}', r'(\1)/(\2)', result)
-
-    def convert_subscript(match):
-        content = match.group(1) or match.group(2)
-        return ''.join(subscript_map.get(c, c) for c in content)
-
-    result = re.sub(r'_\{([^}]*)\}|_([a-zA-Z0-9])', convert_subscript, result)
-
-    def convert_superscript(match):
-        content = match.group(1) or match.group(2)
-        return ''.join(superscript_map.get(c, c) for c in content)
-
-    result = re.sub(r'\^\{([^}]*)\}|\^([a-zA-Z0-9*])', convert_superscript, result)
-
-    result = re.sub(r'\\sqrt\{([^}]*)\}', r'√(\1)', result)
-    result = re.sub(r'\\[a-zA-Z]+', '', result)
-    result = result.replace('{', '').replace('}', '')
-    result = ' '.join(result.split())
-
-    return result
-
-def convert_latex_to_unicode(text):
-    """Convert LaTeX math expressions to Unicode."""
+def convert_latex_to_mathml(text):
+    """Convert LaTeX math expressions to MathML."""
     if not text:
         return text
 
     def replace_display_math(match):
         latex = match.group(1)
-        latex = re.sub(r'\\begin\{[^}]+\}', '', latex)
-        latex = re.sub(r'\\end\{[^}]+\}', '', latex)
-        unicode_math = latex_to_unicode(latex)
-        return f'<p class="math-block">{unicode_math}</p>'
+        mathml = latex_to_mathml(latex, display=True)
+        return f'<div class="math-block">{mathml}</div>'
 
     def replace_inline_math(match):
         latex = match.group(1)
-        unicode_math = latex_to_unicode(latex)
-        return f'<span class="math-inline">{unicode_math}</span>'
+        mathml = latex_to_mathml(latex, display=False)
+        return mathml  # MathML is already wrapped
 
+    # Replace \[...\] display math
     text = re.sub(r'\\\[(.+?)\\\]', replace_display_math, text, flags=re.DOTALL)
+
+    # Replace $$...$$ display math
     text = re.sub(r'\$\$([^$]+)\$\$', replace_display_math, text, flags=re.DOTALL)
+
+    # Replace \(...\) inline math
     text = re.sub(r'\\\((.+?)\\\)', replace_inline_math, text, flags=re.DOTALL)
+
+    # Replace inline math ($...$)
     text = re.sub(r'(?<!\$)\$([^$]+)\$(?!\$)', replace_inline_math, text)
 
     return text
 
 def convert_latex_in_soup(soup):
-    """Convert all LaTeX math in the soup to Unicode."""
+    """Convert all LaTeX math in the soup to MathML."""
     for element in list(soup.find_all(string=True)):
         if element.parent.name in ['script', 'style', 'code', 'pre']:
             continue
 
         text = str(element)
         if '$' in text or '\\[' in text or '\\(' in text:
-            new_text = convert_latex_to_unicode(text)
+            new_text = convert_latex_to_mathml(text)
             if new_text != text:
                 new_soup = BeautifulSoup(new_text, 'html.parser')
                 element.replace_with(new_soup)
@@ -618,6 +565,29 @@ blockquote {
     padding-top: 1em;
     border-top: 1px solid #eee;
 }
+
+/* MathML styling */
+math {
+    font-family: "STIX Two Math", "Cambria Math", "Latin Modern Math", serif;
+    font-size: 1em;
+}
+
+math[display="block"] {
+    display: block;
+    text-align: center;
+    margin: 1em 0;
+}
+
+.math-block {
+    text-align: center;
+    margin: 1em 0;
+}
+
+.math-fallback {
+    font-family: monospace;
+    background: #f5f5f5;
+    padding: 0.2em 0.4em;
+}
 '''
 
 def main():
@@ -675,8 +645,8 @@ def main():
                 lang='en'
             )
 
-            # Set content using ebooklib's expected format
-            chapter.set_content(f'''<html xmlns="http://www.w3.org/1999/xhtml">
+            # Set content using ebooklib's expected format with MathML namespace
+            chapter.set_content(f'''<html xmlns="http://www.w3.org/1999/xhtml" xmlns:m="http://www.w3.org/1998/Math/MathML">
 <head>
     <title>{title}</title>
     <link rel="stylesheet" type="text/css" href="style/main.css"/>
