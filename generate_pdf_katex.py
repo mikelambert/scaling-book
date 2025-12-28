@@ -119,6 +119,31 @@ def process_latex_for_katex(content):
 
     content = re.sub(r'\$\$\s*\\begin\{align\*?\}([\s\S]*?)\\end\{align\*?\}\s*\$\$', fix_align, content)
 
+    # Convert inline $$...$$ to $...$
+    # Display math: $$ on its own line or at start/end of line with only whitespace
+    # Inline math: $$ surrounded by text on the same line
+    def convert_inline_math(match):
+        before = match.group(1)  # Character before $$
+        latex = match.group(2)   # The LaTeX content
+        after = match.group(3)   # Character after $$
+
+        # If it's a simple expression (no newlines, not too long) and surrounded by text,
+        # treat as inline
+        is_simple = '\n' not in latex and len(latex) < 100
+        has_text_before = before and before not in '\n'
+        has_text_after = after and after not in '\n'
+
+        if is_simple and (has_text_before or has_text_after):
+            # Convert to single $ for inline rendering
+            return f'{before}${latex}${after}'
+        else:
+            # Keep as $$ for display
+            return match.group(0)
+
+    # Match $$ with context: (char before)(latex content)(char after)
+    # We need to be careful not to match $$$$ as two empty display maths
+    content = re.sub(r'(.)?\$\$([^$]+?)\$\$(.)?', convert_inline_math, content)
+
     return content
 
 
