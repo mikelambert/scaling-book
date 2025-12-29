@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Fetch all pages from https://jax-ml.github.io/scaling-book/ and convert to EPUB.
-KINDLE VERSION - Display math rendered as images for reliable display.
+KINDLE VERSION - Display math rendered as images using real LaTeX.
 Handles the Distill.js template used by the scaling-book website.
 """
 
@@ -15,17 +15,9 @@ import copy
 import base64
 from io import BytesIO
 import hashlib
-
-# Try to import matplotlib for math rendering
-try:
-    import matplotlib
-    matplotlib.use('Agg')  # Non-interactive backend
-    import matplotlib.pyplot as plt
-    from matplotlib import mathtext
-    HAS_MATPLOTLIB = True
-except ImportError:
-    HAS_MATPLOTLIB = False
-    print("Warning: matplotlib not available, falling back to text for display math")
+import subprocess
+import tempfile
+import shutil
 
 BASE_URL = "https://jax-ml.github.io/scaling-book/"
 
@@ -52,6 +44,8 @@ image_cache = {}
 math_image_cache = {}
 # Counter for math images
 math_image_counter = [0]
+# Stats
+math_stats = {"success": 0, "fallback": 0}
 
 def fetch_page(page_slug, max_retries=3):
     """Fetch a page and return its HTML content with retry logic."""
@@ -127,64 +121,110 @@ def download_image(url, max_retries=3):
 
     return None
 
-def clean_latex_for_matplotlib(latex):
-    """Clean LaTeX for matplotlib rendering."""
+def clean_latex_for_rendering(latex):
+    """Clean LaTeX for rendering - handle HTML entities and common issues."""
     # Unescape HTML entities
-    latex = latex.replace('&gt;', '>').replace('&lt;', '<').replace('&amp;', '&')
+    latex = latex.replace('&gt;', '>')
+    latex = latex.replace('&lt;', '<')
+    latex = latex.replace('&amp;', '&')
+    latex = latex.replace('&#39;', "'")
+    latex = latex.replace('&quot;', '"')
 
-    # Remove environments that matplotlib doesn't understand
-    latex = re.sub(r'\\begin\{[^}]+\}', '', latex)
-    latex = re.sub(r'\\end\{[^}]+\}', '', latex)
+    # Remove \begin{equation}, etc. - we'll wrap in equation ourselves
+    latex = re.sub(r'\\begin\{equation\*?\}', '', latex)
+    latex = re.sub(r'\\end\{equation\*?\}', '', latex)
 
-    # Remove alignment markers
-    latex = latex.replace('&', '')
+    # Handle align environments - convert to aligned
+    latex = re.sub(r'\\begin\{align\*?\}', r'\\begin{aligned}', latex)
+    latex = re.sub(r'\\end\{align\*?\}', r'\\end{aligned}', latex)
 
-    # Remove spacing commands
-    latex = re.sub(r'\\\[[\d.]*em\]', '', latex)
-    latex = re.sub(r'\\quad', ' ', latex)
-    latex = re.sub(r'\\qquad', '  ', latex)
-    latex = re.sub(r'\\,', ' ', latex)
-    latex = re.sub(r'\\;', ' ', latex)
-    latex = re.sub(r'\\!', '', latex)
+    # Handle gather environments
+    latex = re.sub(r'\\begin\{gather\*?\}', r'\\begin{gathered}', latex)
+    latex = re.sub(r'\\end\{gather\*?\}', r'\\end{gathered}', latex)
 
-    # Replace line breaks with space
-    latex = latex.replace('\\\\', ' ')
+    # Remove spacing hints that might cause issues
+    latex = re.sub(r'\\\[[\d.]*em\]', r'\\\\', latex)
 
-    # Replace \text{} with just the text
-    latex = re.sub(r'\\text\{([^}]*)\}', r'\1', latex)
-    latex = re.sub(r'\\mathrm\{([^}]*)\}', r'\1', latex)
-    latex = re.sub(r'\\mathbf\{([^}]*)\}', r'\1', latex)
-    latex = re.sub(r'\\mathit\{([^}]*)\}', r'\1', latex)
-    latex = re.sub(r'\\textbf\{([^}]*)\}', r'\1', latex)
-
-    # Replace some commands matplotlib doesn't handle well
-    latex = latex.replace('\\cdots', '...')
-    latex = latex.replace('\\ldots', '...')
-    latex = latex.replace('\\dots', '...')
-    latex = latex.replace('\\approx', '≈')
-    latex = latex.replace('\\neq', '≠')
-    latex = latex.replace('\\leq', '≤')
-    latex = latex.replace('\\geq', '≥')
-    latex = latex.replace('\\rightarrow', '→')
-    latex = latex.replace('\\leftarrow', '←')
-    latex = latex.replace('\\Rightarrow', '⇒')
-    latex = latex.replace('\\Leftarrow', '⇐')
-    latex = latex.replace('\\infty', '∞')
-    latex = latex.replace('\\partial', '∂')
-    latex = latex.replace('\\nabla', '∇')
-
-    # Strip whitespace
+    # Clean up extra whitespace
     latex = latex.strip()
 
     return latex
 
-def render_latex_to_image(latex, book, dpi=150):
-    """Render LaTeX to a PNG image and add to book."""
-    if not HAS_MATPLOTLIB:
+def render_latex_with_dvipng(latex, dpi=150):
+    """Render LaTeX to PNG using real LaTeX + dvipng."""
+
+    # Create temporary directory
+    tmpdir = tempfile.mkdtemp()
+
+    try:
+        # LaTeX document template
+        tex_content = r'''\documentclass[12pt]{article}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{amsfonts}
+\usepackage{mathtools}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+
+% Define common commands that might be missing
+\providecommand{\text}[1]{\textrm{#1}}
+\providecommand{\operatorname}[1]{\textrm{#1}}
+
+\pagestyle{empty}
+\begin{document}
+\begin{equation*}
+''' + latex + r'''
+\end{equation*}
+\end{document}
+'''
+
+        # Write tex file
+        tex_path = os.path.join(tmpdir, 'math.tex')
+        with open(tex_path, 'w', encoding='utf-8') as f:
+            f.write(tex_content)
+
+        # Run latex to create DVI
+        result = subprocess.run(
+            ['latex', '-interaction=nonstopmode', '-halt-on-error', 'math.tex'],
+            cwd=tmpdir,
+            capture_output=True,
+            timeout=30
+        )
+
+        dvi_path = os.path.join(tmpdir, 'math.dvi')
+        if not os.path.exists(dvi_path):
+            return None
+
+        # Run dvipng to create PNG
+        png_path = os.path.join(tmpdir, 'math.png')
+        result = subprocess.run(
+            ['dvipng', '-D', str(dpi), '-T', 'tight', '-bg', 'Transparent',
+             '-o', png_path, dvi_path],
+            cwd=tmpdir,
+            capture_output=True,
+            timeout=30
+        )
+
+        if not os.path.exists(png_path):
+            return None
+
+        # Read PNG content
+        with open(png_path, 'rb') as f:
+            return f.read()
+
+    except subprocess.TimeoutExpired:
         return None
+    except Exception as e:
+        return None
+    finally:
+        # Clean up
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+def render_latex_to_image(latex, book):
+    """Render LaTeX to a PNG image and add to book."""
 
     # Clean the LaTeX
-    clean_latex = clean_latex_for_matplotlib(latex)
+    clean_latex = clean_latex_for_rendering(latex)
     if not clean_latex:
         return None
 
@@ -193,35 +233,11 @@ def render_latex_to_image(latex, book, dpi=150):
     if cache_key in math_image_cache:
         return math_image_cache[cache_key]
 
-    try:
-        # Create figure with transparent background
-        fig = plt.figure(figsize=(10, 1))
-        fig.patch.set_alpha(0)
+    # Try to render with LaTeX
+    img_content = render_latex_with_dvipng(clean_latex)
 
-        # Render the LaTeX - wrap in $ for matplotlib
-        text = fig.text(0.5, 0.5, f'${clean_latex}$',
-                       fontsize=14,
-                       ha='center', va='center',
-                       transform=fig.transFigure)
-
-        # Get the bounding box to crop tightly
-        fig.canvas.draw()
-        bbox = text.get_window_extent(renderer=fig.canvas.get_renderer())
-
-        # Convert to inches and add padding
-        bbox_inches = bbox.transformed(fig.dpi_scale_trans.inverted())
-        bbox_inches = bbox_inches.expanded(1.2, 1.4)  # Add some padding
-
-        # Save to bytes
-        buf = BytesIO()
-        fig.savefig(buf, format='png', dpi=dpi,
-                   bbox_inches=bbox_inches,
-                   transparent=True,
-                   pad_inches=0.1)
-        plt.close(fig)
-
-        buf.seek(0)
-        img_content = buf.read()
+    if img_content:
+        math_stats["success"] += 1
 
         # Create unique filename
         math_image_counter[0] += 1
@@ -238,9 +254,8 @@ def render_latex_to_image(latex, book, dpi=150):
         math_image_cache[cache_key] = img_filename
 
         return img_filename
-
-    except Exception as e:
-        # If rendering fails, return None
+    else:
+        math_stats["fallback"] += 1
         return None
 
 def latex_to_unicode_inline(latex):
@@ -251,29 +266,58 @@ def latex_to_unicode_inline(latex):
     # Greek letters
     greek = {
         r'\alpha': 'α', r'\beta': 'β', r'\gamma': 'γ', r'\delta': 'δ',
-        r'\epsilon': 'ε', r'\zeta': 'ζ', r'\eta': 'η', r'\theta': 'θ',
-        r'\iota': 'ι', r'\kappa': 'κ', r'\lambda': 'λ', r'\mu': 'μ',
-        r'\nu': 'ν', r'\xi': 'ξ', r'\pi': 'π', r'\rho': 'ρ',
-        r'\sigma': 'σ', r'\tau': 'τ', r'\upsilon': 'υ', r'\phi': 'φ',
-        r'\chi': 'χ', r'\psi': 'ψ', r'\omega': 'ω',
+        r'\epsilon': 'ε', r'\varepsilon': 'ε', r'\zeta': 'ζ', r'\eta': 'η',
+        r'\theta': 'θ', r'\vartheta': 'ϑ', r'\iota': 'ι', r'\kappa': 'κ',
+        r'\lambda': 'λ', r'\mu': 'μ', r'\nu': 'ν', r'\xi': 'ξ',
+        r'\pi': 'π', r'\varpi': 'ϖ', r'\rho': 'ρ', r'\varrho': 'ϱ',
+        r'\sigma': 'σ', r'\varsigma': 'ς', r'\tau': 'τ', r'\upsilon': 'υ',
+        r'\phi': 'φ', r'\varphi': 'ϕ', r'\chi': 'χ', r'\psi': 'ψ', r'\omega': 'ω',
         r'\Gamma': 'Γ', r'\Delta': 'Δ', r'\Theta': 'Θ', r'\Lambda': 'Λ',
-        r'\Xi': 'Ξ', r'\Pi': 'Π', r'\Sigma': 'Σ', r'\Phi': 'Φ',
-        r'\Psi': 'Ψ', r'\Omega': 'Ω',
+        r'\Xi': 'Ξ', r'\Pi': 'Π', r'\Sigma': 'Σ', r'\Upsilon': 'Υ',
+        r'\Phi': 'Φ', r'\Psi': 'Ψ', r'\Omega': 'Ω',
     }
 
     # Math symbols
     symbols = {
         r'\times': '×', r'\div': '÷', r'\pm': '±', r'\mp': '∓',
-        r'\cdot': '·', r'\leq': '≤', r'\geq': '≥', r'\neq': '≠',
-        r'\approx': '≈', r'\equiv': '≡', r'\propto': '∝',
+        r'\cdot': '·', r'\ast': '∗', r'\star': '⋆', r'\circ': '∘',
+        r'\bullet': '•', r'\oplus': '⊕', r'\otimes': '⊗',
+        r'\leq': '≤', r'\le': '≤', r'\geq': '≥', r'\ge': '≥',
+        r'\neq': '≠', r'\ne': '≠', r'\approx': '≈', r'\simeq': '≃',
+        r'\cong': '≅', r'\equiv': '≡', r'\propto': '∝', r'\sim': '∼',
+        r'\ll': '≪', r'\gg': '≫', r'\prec': '≺', r'\succ': '≻',
         r'\infty': '∞', r'\partial': '∂', r'\nabla': '∇',
-        r'\sum': 'Σ', r'\prod': 'Π', r'\int': '∫',
-        r'\rightarrow': '→', r'\leftarrow': '←',
-        r'\Rightarrow': '⇒', r'\Leftarrow': '⇐',
-        r'\forall': '∀', r'\exists': '∃',
-        r'\in': '∈', r'\notin': '∉', r'\subset': '⊂', r'\supset': '⊃',
-        r'\cup': '∪', r'\cap': '∩',
-        r'\ldots': '…', r'\cdots': '⋯', r'\dots': '…',
+        r'\sum': '∑', r'\prod': '∏', r'\coprod': '∐',
+        r'\int': '∫', r'\iint': '∬', r'\iiint': '∭', r'\oint': '∮',
+        r'\rightarrow': '→', r'\to': '→', r'\leftarrow': '←',
+        r'\leftrightarrow': '↔', r'\Rightarrow': '⇒', r'\Leftarrow': '⇐',
+        r'\Leftrightarrow': '⇔', r'\mapsto': '↦', r'\longmapsto': '⟼',
+        r'\uparrow': '↑', r'\downarrow': '↓', r'\updownarrow': '↕',
+        r'\forall': '∀', r'\exists': '∃', r'\nexists': '∄',
+        r'\in': '∈', r'\notin': '∉', r'\ni': '∋',
+        r'\subset': '⊂', r'\supset': '⊃', r'\subseteq': '⊆', r'\supseteq': '⊇',
+        r'\cup': '∪', r'\cap': '∩', r'\setminus': '∖',
+        r'\emptyset': '∅', r'\varnothing': '∅',
+        r'\ldots': '…', r'\cdots': '⋯', r'\dots': '…', r'\vdots': '⋮', r'\ddots': '⋱',
+        r'\langle': '⟨', r'\rangle': '⟩',
+        r'\lceil': '⌈', r'\rceil': '⌉', r'\lfloor': '⌊', r'\rfloor': '⌋',
+        r'\neg': '¬', r'\land': '∧', r'\lor': '∨', r'\wedge': '∧', r'\vee': '∨',
+        r'\top': '⊤', r'\bot': '⊥', r'\perp': '⊥',
+        r'\prime': '′', r'\angle': '∠', r'\triangle': '△',
+        r'\square': '□', r'\Diamond': '◇',
+        r'\aleph': 'ℵ', r'\hbar': 'ℏ', r'\ell': 'ℓ', r'\wp': '℘',
+        r'\Re': 'ℜ', r'\Im': 'ℑ',
+        r'\dagger': '†', r'\ddagger': '‡',
+        # Common operators
+        r'\log': 'log', r'\ln': 'ln', r'\exp': 'exp',
+        r'\sin': 'sin', r'\cos': 'cos', r'\tan': 'tan',
+        r'\sec': 'sec', r'\csc': 'csc', r'\cot': 'cot',
+        r'\sinh': 'sinh', r'\cosh': 'cosh', r'\tanh': 'tanh',
+        r'\arcsin': 'arcsin', r'\arccos': 'arccos', r'\arctan': 'arctan',
+        r'\min': 'min', r'\max': 'max', r'\sup': 'sup', r'\inf': 'inf',
+        r'\lim': 'lim', r'\limsup': 'lim sup', r'\liminf': 'lim inf',
+        r'\det': 'det', r'\dim': 'dim', r'\ker': 'ker', r'\hom': 'hom',
+        r'\arg': 'arg', r'\deg': 'deg', r'\gcd': 'gcd', r'\mod': 'mod',
     }
 
     result = latex
@@ -286,7 +330,8 @@ def latex_to_unicode_inline(latex):
     subscript_map = {'0': '₀', '1': '₁', '2': '₂', '3': '₃', '4': '₄',
                      '5': '₅', '6': '₆', '7': '₇', '8': '₈', '9': '₉',
                      'i': 'ᵢ', 'j': 'ⱼ', 'n': 'ₙ', 'm': 'ₘ', 'k': 'ₖ',
-                     'a': 'ₐ', 'e': 'ₑ', 'o': 'ₒ', 'x': 'ₓ',
+                     'a': 'ₐ', 'e': 'ₑ', 'o': 'ₒ', 'x': 'ₓ', 'r': 'ᵣ',
+                     'u': 'ᵤ', 'v': 'ᵥ', 'p': 'ₚ', 's': 'ₛ', 't': 'ₜ',
                      '+': '₊', '-': '₋', '=': '₌', '(': '₍', ')': '₎'}
 
     superscript_map = {'0': '⁰', '1': '¹', '2': '²', '3': '³', '4': '⁴',
@@ -297,13 +342,10 @@ def latex_to_unicode_inline(latex):
                        'p': 'ᵖ', 'r': 'ʳ', 's': 'ˢ', 't': 'ᵗ', 'u': 'ᵘ',
                        'v': 'ᵛ', 'w': 'ʷ', 'x': 'ˣ', 'y': 'ʸ', 'z': 'ᶻ',
                        '+': '⁺', '-': '⁻', '=': '⁼', '(': '⁽', ')': '⁾',
-                       'T': 'ᵀ'}
+                       'T': 'ᵀ', 'H': 'ᴴ'}
 
     def replace_script(match, script_map):
         content = match.group(1)
-        if len(content) == 1 and content in script_map:
-            return script_map[content]
-        # Try to convert each character
         converted = ''
         for char in content:
             if char in script_map:
@@ -324,9 +366,22 @@ def latex_to_unicode_inline(latex):
     result = re.sub(r'\\sqrt\{([^}]+)\}', r'√(\1)', result)
     result = re.sub(r'\\sqrt\[([^\]]+)\]\{([^}]+)\}', r'\1√(\2)', result)
 
+    # Handle text commands
+    result = re.sub(r'\\text\{([^}]*)\}', r'\1', result)
+    result = re.sub(r'\\textrm\{([^}]*)\}', r'\1', result)
+    result = re.sub(r'\\mathrm\{([^}]*)\}', r'\1', result)
+    result = re.sub(r'\\mathbf\{([^}]*)\}', r'\1', result)
+    result = re.sub(r'\\mathit\{([^}]*)\}', r'\1', result)
+    result = re.sub(r'\\textbf\{([^}]*)\}', r'\1', result)
+    result = re.sub(r'\\mathcal\{([^}]*)\}', r'\1', result)
+    result = re.sub(r'\\mathbb\{([^}]*)\}', r'\1', result)
+
     # Remove remaining LaTeX commands
     result = re.sub(r'\\[a-zA-Z]+', '', result)
     result = re.sub(r'[{}]', '', result)
+
+    # Clean up whitespace
+    result = re.sub(r'\s+', ' ', result)
 
     return result.strip()
 
@@ -344,12 +399,14 @@ def convert_latex_for_kindle(text, book):
         else:
             # Fallback to styled text
             unicode_text = latex_to_unicode_inline(latex)
-            return f'<div class="math-block math-fallback">{unicode_text}</div>'
+            escaped = unicode_text.replace('<', '&lt;').replace('>', '&gt;')
+            return f'<div class="math-block math-fallback">{escaped}</div>'
 
     def replace_inline_math(match):
         latex = match.group(1)
         unicode_text = latex_to_unicode_inline(latex)
-        return f'<span class="math-inline">{unicode_text}</span>'
+        escaped = unicode_text.replace('<', '&lt;').replace('>', '&gt;')
+        return f'<span class="math-inline">{escaped}</span>'
 
     # Replace \[...\] display math
     text = re.sub(r'\\\[(.+?)\\\]', replace_display_math, text, flags=re.DOTALL)
@@ -779,13 +836,15 @@ blockquote {
 def main():
     print("=" * 60)
     print("Scaling Book Website to EPUB Converter (KINDLE VERSION)")
-    print("Display math rendered as images for reliable display")
+    print("Display math rendered as images using real LaTeX")
     print("=" * 60)
 
-    if HAS_MATPLOTLIB:
-        print("✓ matplotlib available - will render display math as images")
-    else:
-        print("✗ matplotlib not available - using text fallback for display math")
+    # Check for LaTeX
+    try:
+        result = subprocess.run(['latex', '--version'], capture_output=True, timeout=5)
+        print("✓ LaTeX available for high-quality math rendering")
+    except:
+        print("✗ LaTeX not found - math images will use fallback")
 
     # Create EPUB book
     book = epub.EpubBook()
@@ -880,7 +939,8 @@ def main():
     print(f"\n✓ Success! EPUB saved to: {epub_path}")
     print(f"  File size: {size_mb:.2f} MB")
     print(f"  Chapters: {len(chapters)}")
-    print(f"  Math images rendered: {math_image_counter[0]}")
+    print(f"  Math images rendered: {math_stats['success']}")
+    print(f"  Math fallbacks (text): {math_stats['fallback']}")
 
 if __name__ == "__main__":
     main()
