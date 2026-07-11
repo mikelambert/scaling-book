@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from markdown_it import MarkdownIt
-from PIL import Image
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 ROOT = Path(__file__).resolve().parents[2]
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -708,6 +708,109 @@ def process_images():
     print("images: %d files, %.1f MB" % (len(IMAGES_USED), total / 1e6))
 
 
+# --------------------------------------------------------------------------
+# Cover generation
+# --------------------------------------------------------------------------
+
+FONT_BOLD = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
+FONT_SERIF_I = "/usr/share/fonts/truetype/liberation/LiberationSerif-Italic.ttf"
+FONT_SANS = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT_MONO = "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf"
+
+
+def make_cover(dest, authors):
+    """Compose a portrait cover: title, dragon art band, authors."""
+    import random
+    if not all(os.path.exists(f) for f in
+               (FONT_BOLD, FONT_SERIF_I, FONT_SANS, FONT_MONO)):
+        # No fonts available: fall back to the raw dragon art.
+        Image.open(ROOT / "assets/img/dragon.png").save(dest)
+        return
+    rnd = random.Random(7)
+    W, H = 1600, 2560
+
+    def lerp(a, b, t):
+        return tuple(round(a[i] + (b[i] - a[i]) * t) for i in range(3))
+
+    # night sky -> dusk pink, matching the artwork's palette
+    top, mid, bot = (36, 32, 58), (66, 52, 96), (148, 78, 128)
+    bg = Image.new("RGB", (W, H))
+    px = bg.load()
+    for y in range(H):
+        t = y / (H - 1)
+        c = lerp(top, mid, t / 0.6) if t < 0.6 else lerp(mid, bot, (t - 0.6) / 0.4)
+        for x in range(W):
+            px[x, y] = c
+
+    d = ImageDraw.Draw(bg)
+
+    def in_text_zone(x, y):
+        return 170 < x < 1430 and 240 < y < 1030
+
+    placed = 0
+    while placed < 140:  # stars
+        x, y = rnd.randint(20, W - 20), rnd.randint(20, int(H * 0.42))
+        if in_text_zone(x, y):
+            continue
+        placed += 1
+        r = rnd.choice([1, 1, 1, 2, 2, 3])
+        b = rnd.randint(120, 220)
+        d.ellipse([x - r, y - r, x + r, y + r], fill=(b, b, min(255, b + 20)))
+    placed = 0
+    while placed < 10:  # 4-point sparkles
+        x, y = rnd.randint(60, W - 60), rnd.randint(60, int(H * 0.38))
+        if in_text_zone(x, y):
+            continue
+        placed += 1
+        sz = rnd.randint(8, 18)
+        d.line([x - sz, y, x + sz, y], fill=(235, 230, 250), width=2)
+        d.line([x, y - sz, x, y + sz], fill=(235, 230, 250), width=2)
+
+    glow_layer = Image.new("RGB", (W, H), (0, 0, 0))
+    gd = ImageDraw.Draw(glow_layer)
+    sharp = []
+
+    def glow_text(xy, text, font, glow_color, sharp_color):
+        gd.text(xy, text, font=font, fill=glow_color, anchor="mm")
+        sharp.append((xy, text, font, sharp_color))
+
+    f_title = ImageFont.truetype(FONT_BOLD, 172)
+    f_small = ImageFont.truetype(FONT_BOLD, 118)
+    f_sub = ImageFont.truetype(FONT_SERIF_I, 62)
+    glow_text((W // 2, 360), "HOW TO", f_small, (60, 40, 90), (222, 215, 240))
+    glow_text((W // 2, 545), "SCALE YOUR", f_title, (110, 60, 130), (255, 250, 240))
+    glow_text((W // 2, 740), "MODEL", f_title, (110, 60, 130), (255, 250, 240))
+    glow_text((W // 2, 940), "A Systems View of LLMs on TPUs", f_sub,
+              (40, 70, 70), (140, 235, 215))
+
+    art = Image.open(ROOT / "assets/img/dragon.png").convert("RGB")
+    band_h = round(W * art.height / art.width)
+    band_y = 1120
+    art = art.resize((W, band_h), Image.LANCZOS)
+    for yy, col in [(band_y - 10, (255, 95, 162)),
+                    (band_y + band_h + 10, (75, 224, 200))]:
+        gd.rectangle([0, yy - 3, W, yy + 3], fill=col)
+
+    bg = ImageChops.screen(bg, glow_layer.filter(ImageFilter.GaussianBlur(18)))
+    bg.paste(art, (0, band_y))
+    d = ImageDraw.Draw(bg)
+    d.rectangle([0, band_y - 12, W, band_y - 8], fill=(255, 120, 175))
+    d.rectangle([0, band_y + band_h + 8, W, band_y + band_h + 12], fill=(96, 232, 210))
+    for xy, text, font, color in sharp:
+        d.text(xy, text, font=font, fill=color, anchor="mm")
+
+    f_auth = ImageFont.truetype(FONT_SANS, 46)
+    y = 2085
+    for i in range(0, len(authors), 3):
+        d.text((W // 2, y), "  ·  ".join(authors[i:i + 3]),
+               font=f_auth, fill=(228, 222, 240), anchor="mm")
+        y += 78
+    f_foot = ImageFont.truetype(FONT_MONO, 40)
+    d.text((W // 2, 2465), "jax-ml.github.io/scaling-book", font=f_foot,
+           fill=(170, 160, 200), anchor="mm")
+    bg.save(dest, "PNG", optimize=True)
+
+
 def main():
     if BUILD.exists():
         shutil.rmtree(BUILD)
@@ -826,7 +929,6 @@ def main():
         toc.append(("bibliography.xhtml", "Bibliography"))
 
     # ---- cover + title page --------------------------------------------------
-    cover_name, _ = register_image("assets/img/dragon.png")
     authors = [a.get("name", "") for a in chapters[0].get("authors", [])
                if isinstance(a, dict)]
     authors = [re.sub(r"<[^>]+>", "", a).replace("*", "").strip()
@@ -840,10 +942,11 @@ def main():
           "</div>"]
     write_xhtml("titlepage.xhtml", "How to Scale Your Model", "\n".join(tp))
     write_xhtml("cover.xhtml", "Cover",
-                '<div class="cover"><img src="images/%s" '
-                'alt="How to Scale Your Model"/></div>' % cover_name)
+                '<div class="cover"><img src="images/cover.png" '
+                'alt="How to Scale Your Model"/></div>')
 
     process_images()
+    make_cover(OEBPS / "images" / "cover.png", authors)
     shutil.copy(SCRIPT_DIR / "book.css", OEBPS / "css" / "book.css")
 
     # ---- nav / ncx / opf ------------------------------------------------------
@@ -878,15 +981,13 @@ def main():
         manifest.append('<item id="c%d" href="%s" media-type="application/xhtml+xml"/>'
                         % (i, fname))
         spine_items.append('<itemref idref="c%d"/>' % i)
-    cover_item_id = None
+    cover_item_id = "imgcover"
+    manifest.append('<item id="imgcover" href="images/cover.png" '
+                    'media-type="image/png" properties="cover-image"/>')
     for j, (rel, (name, _)) in enumerate(sorted(IMAGES_USED.items())):
         mt = "image/jpeg" if name.lower().endswith((".jpg", ".jpeg")) else "image/png"
-        props = ""
-        if name == cover_name:
-            props = ' properties="cover-image"'
-            cover_item_id = "img%d" % j
-        manifest.append('<item id="img%d" href="images/%s" media-type="%s"%s/>'
-                        % (j, name, mt, props))
+        manifest.append('<item id="img%d" href="images/%s" media-type="%s"/>'
+                        % (j, name, mt))
     for j, svg in enumerate(sorted(math_dir.glob("*.svg"))):
         manifest.append('<item id="math%d" href="math/%s" media-type="image/svg+xml"/>'
                         % (j, svg.name))
