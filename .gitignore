@@ -11,3 +11,5 @@ assets/libs/
 node_modules/
 vendor
 .idea
+_build/
+_scripts/epub/node_modules/
