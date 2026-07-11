@@ -13,3 +13,4 @@ vendor
 .idea
 _build/
 _scripts/epub/node_modules/
+__pycache__/
